@@ -1,1 +1,240 @@
-hello flag
+# Level06 — Reverse Engineering & Custom Hash Authentication Bypass
+
+## Context
+
+Inside the home directory of the `level06` user, we find a binary named `level06`.
+The program implements a custom authentication system using a proprietary hash algorithm that generates serial numbers based on username input.
+Our objective is to reverse engineer the hash algorithm and generate valid serial numbers to bypass authentication.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level07 level07   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level07 level07  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level06 level06 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level07 users   7907 Sep 10  2016 level06
+-rw-r--r--  1 level07 level07  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level06` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level07`).
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level06
+***********************************
+*		level06		  *
+***********************************
+-> Enter Login: test
+***********************************
+***** NEW ACCOUNT DETECTED ********
+***********************************
+-> Enter Serial: 12345
+```
+
+The program prompts for a login and then requests a corresponding serial number for authentication.
+
+---
+
+## Static Analysis (Disassembly)
+
+**Program Flow Analysis:**
+
+### Main Function Structure
+```asm
+0x080488cf <+86>:    mov    0x804a060,%eax       ; stdin
+0x080488e7 <+110>:   call   0x8048550 <fgets@plt> ; Read login (32 bytes)
+0x0804892d <+180>:   call   0x80485e0 <__isoc99_scanf@plt> ; Read serial
+0x08048941 <+200>:   call   0x8048748 <auth>     ; Authentication function
+0x08048946 <+205>:   test   %eax,%eax            ; Check auth result
+0x08048948 <+207>:   jne    0x8048969 <main+240> ; Jump if auth failed
+0x0804895d <+228>:   call   0x80485a0 <system@plt> ; Execute shell on success
+```
+
+### Authentication Function Analysis
+```asm
+# Input validation
+0x08048786 <+62>:    cmpl   $0x5,-0xc(%ebp)      ; Check length > 5
+0x0804878a <+66>:    jg     0x8048796 <auth+78>   ; Jump if valid length
+
+# Anti-debugging protection
+0x080487b5 <+109>:   call   0x80485f0 <ptrace@plt>
+0x080487ba <+114>:   cmp    $0xffffffff,%eax
+0x080487bd <+117>:   jne    0x80487ed <auth+165>
+
+# Hash calculation initialization
+0x080487f0 <+168>:   add    $0x3,%eax             ; username[3]
+0x080487f9 <+177>:   xor    $0x1337,%eax          ; XOR with 0x1337
+0x080487fe <+182>:   add    $0x5eeded,%eax        ; Add 0x5eeded
+```
+
+**Critical observations:**
+* Username must be at least 6 characters long
+* Anti-debugging protection via `ptrace()`
+* Hash algorithm starts with `username[3] ^ 0x1337 + 0x5eeded`
+* Complex loop iterating through all username characters
+
+---
+
+## Vulnerability Analysis
+
+### Anti-Debugging Bypass
+
+The program uses `ptrace()` to detect debugging:
+
+```bash
+(gdb) b *0x080487ae    # Before ptrace call
+(gdb) run
+(gdb) jump *0x080487ed  # Skip ptrace protection
+```
+
+This allows us to bypass the anti-debugging mechanism and analyze the hash algorithm.
+
+---
+
+## Hash Algorithm Reverse Engineering
+
+### Step 1: Initial Hash Calculation
+
+```c
+// Initial hash based on 4th character of username
+hash = (username[3] ^ 0x1337) + 0x5eeded;
+```
+
+### Step 2: Character Processing Loop
+
+Analysis of the complex assembly reveals a modular arithmetic operation:
+
+```c
+for (i = 0; i < string_length; i++) {
+    if (username[i] < 0x20) {  // Check for printable characters
+        return 1;  // Authentication failure
+    }
+    hash += (username[i] ^ hash) % 0x539;
+}
+```
+
+### Step 3: Algorithm Verification
+
+Using GDB to extract the calculated hash:
+
+```bash
+(gdb) b *0x08048863    # Before final comparison
+(gdb) run
+Enter Login: amrakibe
+Enter Serial: [any number]
+(gdb) x/d $ebp-0x10
+0xffffd6a8:	6234515    # Calculated hash value
+```
+
+---
+
+## Hash Algorithm Implementation
+
+### Complete C Implementation
+
+```c
+#include <string.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+int auth(char *username) {
+    size_t string_len;
+    int i;
+    int calculated_hash;
+
+    // Clean input (remove newline)
+    string_len = strcspn(username, "\n");
+    username[string_len] = '\0';
+
+    // Check minimum length
+    string_len = strnlen(username, 0x20);
+    if ((int)string_len < 6) {
+        printf("Username must be at least 6 characters long\n");
+        exit(1);
+    }
+
+    // Initialize hash with 4th character
+    calculated_hash = ((int)username[3] ^ 0x1337U) + 0x5eeded;
+    
+    // Process each character
+    for (i = 0; i < (int)string_len; i++) {
+        if (username[i] < ' ') {  // Check printable characters
+            return 1;
+        }
+        calculated_hash = calculated_hash + ((int)username[i] ^ calculated_hash) % 0x539;
+    }
+    
+    return calculated_hash;
+}
+
+int main(void) {
+    int auth_result;
+    char login_input[32];
+
+    printf("-> Enter Login: ");
+    fgets(login_input, 0x20, stdin);
+
+    auth_result = auth(login_input);
+    printf("-> serial: %d\n", auth_result);
+}
+```
+
+---
+
+## Exploitation Methods
+
+### Method 1: GDB Runtime Extraction
+
+```bash
+(gdb) b *0x08048863
+(gdb) run
+Enter Login: amrakibe
+(gdb) x/d $ebp-0x10
+# Extract calculated hash: 6234515
+```
+
+### Method 2: Hash Generator Program
+
+Compile and run the C implementation above to generate valid serials for any username:
+
+```bash
+$ gcc hash_generator.c -o hash_gen
+$ echo "amrakibe" | ./hash_gen
+-> serial: 6234515
+```
+
+## Authentication Bypass
+
+Using the calculated serial number:
+
+```bash
+$ ./level06
+***********************************
+*		level06		  *
+***********************************
+-> Enter Login: amrakibe
+***********************************
+***** NEW ACCOUNT DETECTED ********
+***********************************
+-> Enter Serial: 6234515
+Authenticated!
+$ id
+uid=1006(level06) gid=1006(level06) euid=1007(level07) egid=100(users) groups=1007(level07),100(users),1006(level06)
+$ cat /home/users/level07/.pass
+GbcPDRgsFK77LNnnuh7QyFYA2942Gp8yKj9KrWD8
+```
+
+**Success:** Shell access with `level07` privileges and password extraction!
+
+---
+

@@ -1,1 +1,52 @@
-hello flag
+#include <stdio.h>
+#include <string.h>
+
+char a_user_name[256];
+
+int verify_user_name(void)
+{
+    puts("verifying username....\n");
+    int result = strncmp(a_user_name, "dat_wil", 7);
+    return result;
+}
+
+int verify_user_pass(char *password)
+{
+    int result = strncmp(password, "admin", 5);
+    return result;
+}
+
+int main(void)
+{
+    char password[64];
+    int username_result;
+    int password_result;
+    
+    memset(password, 0, sizeof(password));
+    
+    puts("********* ADMIN LOGIN PROMPT *********");
+    
+    printf("Enter Username: ");
+    fgets(a_user_name, 256, stdin);
+    
+    username_result = verify_user_name();
+    
+    if (username_result == 0) {
+        puts("Enter Password: ");
+        fgets(password, 100, stdin);
+        
+        password_result = verify_user_pass(password);
+        
+        if ((password_result == 0) || (password_result != 0)) {
+            puts("nope, incorrect password...\n");
+            return 1;
+        }
+        else {
+            return 0;
+        }
+    }
+    else {
+        puts("nope, incorrect username...\n");
+        return 1;
+    }
+}

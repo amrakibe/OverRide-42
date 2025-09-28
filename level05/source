@@ -1,1 +1,20 @@
-hello flag
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(void) {
+    char input[100];
+    unsigned int i = 0;
+
+    fgets(input, sizeof(input), stdin);
+
+    while (1) {
+        if (input[i] != '\0') {
+            if (input[i] >= 'A' && input[i] <= 'Z') {
+                input[i] ^= 0x20;
+            }
+            i++;
+        }
+    }
+    printf(input);
+    exit(0);
+}

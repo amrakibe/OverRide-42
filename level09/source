@@ -1,1 +1,80 @@
-hello flag
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+
+typedef struct s_message {
+    char text[140];
+    char username[40];
+    int  len;                    
+} t_message;
+
+void secret_backdoor(void)
+{
+    char buffer[128];
+    if (fgets(buffer, sizeof(buffer), stdin) != NULL) {
+        system(buffer);
+    }
+}
+
+
+void set_msg(t_message *message)
+{
+    char local_buffer[1024];
+
+    memset(local_buffer, 0, sizeof(local_buffer));
+
+    puts(">: Msg @Unix-Dude");
+    printf(">>: ");
+    if (fgets(local_buffer, sizeof(local_buffer), stdin) == NULL)
+        return;
+
+    if (message->len > 0) {
+        strncpy(message->text, local_buffer, (size_t)message->len);
+    }
+}
+
+void set_username(t_message *message)
+{
+    char local_buffer[128];
+    int i;
+
+    memset(local_buffer, 0, sizeof(local_buffer));
+
+    puts(">: Enter your username");
+    printf(">>: ");
+    if (fgets(local_buffer, sizeof(local_buffer), stdin) == NULL)
+        return;
+
+    for (i = 0; i < 41 && local_buffer[i] != '\0'; ++i) {
+        message->username[i] = local_buffer[i];
+    }
+
+    printf(">: Welcome, %s", message->username);
+}
+
+void handle_msg(t_message *message)
+{
+    set_username(message);
+    set_msg(message);
+
+    puts(">: Msg sent!");
+}
+
+int main(void)
+{
+    puts(
+        "--------------------------------------------\n"
+        "|   ~Welcome to l33t-m$n ~    v1337        |\n"
+        "--------------------------------------------"
+    );
+
+    t_message message;
+
+    memset(&message, 0, sizeof(message));
+    message.len = 140; / F0 = 240 
+ 
+    handle_msg(&message);
+    return 0;
+}

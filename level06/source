@@ -1,1 +1,84 @@
-hello flag
+bool main(void)
+{
+    int auth_result;
+    int stack_guard;
+    char login_input[32];
+    int stack_check;
+    uint serial_input;
+    
+    stack_check = *(int *)(in_GS_OFFSET + 0x14);
+    
+    puts("***********************************");
+    puts("*\t\tlevel06\t\t  *");
+    puts("***********************************");
+    printf("-> Enter Login: ");
+    fgets(login_input, 0x20, stdin);
+    
+    puts("***********************************");
+    puts("***** NEW ACCOUNT DETECTED ********");
+    puts("***********************************");
+    printf("-> Enter Serial: ");
+    scanf("%u", &serial_input);
+
+    auth_result = auth(login_input, serial_input);
+    
+    if (auth_result == 0) {
+        puts("Authenticated!");
+        system("/bin/sh");
+    }
+    
+    if (stack_check != *(int *)(in_GS_OFFSET + 0x14)) {
+        __stack_chk_fail();
+    }
+    
+    return auth_result != 0;
+}
+
+int auth(char *username, uint serial)
+{
+    size_t string_len;
+    int result;
+    long ptrace_result;
+    int i;
+    uint calculated_hash;
+    
+    // Remove newline from username
+    string_len = strcspn(username, "\n");
+    username[string_len] = '\0';
+
+    string_len = strnlen(username, 0x20);
+
+    if ((int)string_len < 6) {
+        result = 1;
+    }
+    
+    else {
+        // Anti-debugging check
+        ptrace_result = ptrace(PTRACE_TRACEME);
+        if (ptrace_result == -1) {
+            puts("\x1b[32m.---------------------------.");
+            puts("\x1b[31m| !! TAMPERING DETECTED !!  |");
+            puts("\x1b[32m\'---------------------------\'");
+            result = 1;
+        }
+        else {
+            calculated_hash = ((int)username[3] ^ 0x1337U) + 0x5eeded;
+            
+            for (i = 0; i < (int)string_len; i++) {
+                if (username[i] < ' ') {
+                    return 1;
+                }
+                calculated_hash = calculated_hash + ((int)username[i] ^ calculated_hash) % 0x539;
+            }
+
+            if (serial == calculated_hash) {
+                result = 0;
+            }
+            else {
+                result = 1;
+            }
+        }
+    }
+    
+    return result;
+}

