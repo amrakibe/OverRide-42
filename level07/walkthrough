@@ -354,24 +354,6 @@ We skip setting tab[115] to a meaningful value because:
 2. **system() won't return anyway** - Once we get a shell, we're interacting with it. The shell process takes over, so `system()` never returns to whatever address is in tab[115]
 3. **If system() DID return** - It would try to jump to whatever garbage value is in tab[115], likely causing a crash. But by then we already have our shell and have read the password file!
 
-**Example with a Real Return Address (optional):**
-
-If we wanted to be "clean" and return properly after system():
-
-```c
-tab[114] = system() address     // Execute system()
-tab[115] = exit() address       // After system(), call exit()
-tab[116] = "/bin/sh" address    // Argument for system()
-```
-
-This would:
-1. Call `system("/bin/sh")` 
-2. When you type `exit` in the shell
-3. Return to `exit()` function
-4. Program terminates cleanly
-
-But in exploitation, we typically don't care about clean exits!
-
 ---
 
 ### Step 5: Execute the Exploit
