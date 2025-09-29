@@ -42,6 +42,9 @@ int store_number(unsigned int *data) {
     return 0; // Success
 }
 
+
+
+
 // Read a number from the data array
 int read_number(unsigned int *data) {
     printf(" Index: ");

