@@ -1,1 +1,254 @@
-hello flag
+# Level03 — XOR Cipher Decryption & Switch Statement Exploitation
+
+## Context
+
+Inside the home directory of the `level03` user, we find a binary named `level03`.
+The program implements a password verification system using XOR encryption with a switch-case structure that determines the decryption key.
+Our objective is to reverse engineer the XOR cipher and determine the correct input value to decrypt the password string and spawn a shell.
+
+---
+
+## Initial Environment — Directory Listing
+
+```bash
+$ ls -la
+total 17
+dr-xr-x---+ 1 level04 level04   80 Oct  2  2016 .
+dr-x--x--x  1 root    root     260 Oct  2  2016 ..
+-rw-r--r--  1 level04 level04  220 Sep 10  2016 .bash_logout
+lrwxrwxrwx  1 root    root       7 Sep 13  2016 .bash_profile -> .bashrc
+-rw-r--r--  1 level03 level03 3533 Sep 10  2016 .bashrc
+-rwsr-s---+ 1 level04 users   9907 Sep 10  2016 level03
+-rw-r--r--  1 level04 level04  675 Sep 10  2016 .profile
+```
+
+> **Note:** the binary `level03` has the **SUID** bit set (`rws`), so it runs with the privileges of its owner (`level04`).
+
+---
+
+## Running the Binary
+
+```bash
+$ ./level03
+***********************************
+*		level03		**
+***********************************
+Password: 12345
+Invalid Password
+
+$ ./level03
+***********************************
+*		level03		**
+***********************************
+Password: 322424827
+Congratulations!
+$ whoami
+level04
+```
+
+The program requests a password and spawns a shell if the correct value is provided.
+
+---
+
+## Static Analysis (Disassembly)
+
+**Program Flow Analysis:**
+
+### Main Function
+```asm
+0x08048873 <+25>:   call   0x80484b0 <time@plt>
+0x08048878 <+30>:   mov    %eax,(%esp)
+0x0804887b <+33>:   call   0x8048500 <srand@plt>    ; Seed random number generator
+
+0x080488c1 <+103>:  call   0x8048530 <__isoc99_scanf@plt>  ; Read user input
+0x080488ca <+112>:  movl   $0x1337d00d,0x4(%esp)    ; Constant: 322424845
+0x080488d2 <+120>:  mov    %eax,(%esp)
+0x080488d5 <+123>:  call   0x8048747 <test>         ; Call test function
+```
+
+### Test Function
+```asm
+0x0804874d <+6>:    mov    0x8(%ebp),%eax           ; user_input
+0x08048750 <+9>:    mov    0xc(%ebp),%edx           ; constant (0x1337d00d)
+0x08048753 <+12>:   mov    %edx,%ecx
+0x08048755 <+14>:   sub    %eax,%ecx                ; difference = constant - input
+0x08048757 <+16>:   mov    %ecx,%eax
+0x08048759 <+18>:   mov    %eax,-0xc(%ebp)
+
+0x0804875c <+21>:   cmpl   $0x15,-0xc(%ebp)         ; Compare with 21
+0x08048760 <+25>:   ja     0x804884a <test+259>     ; Jump if > 21
+0x08048766 <+31>:   mov    -0xc(%ebp),%eax
+0x08048769 <+34>:   shl    $0x2,%eax                ; multiply by 4
+0x0804876c <+37>:   add    $0x80489f0,%eax          ; jump table address
+0x08048771 <+42>:   mov    (%eax),%eax
+0x08048773 <+44>:   jmp    *%eax                    ; Jump to case handler
+```
+
+### Decrypt Function
+```asm
+0x08048673 <+19>:   movl   $0x757c7d51,-0x1d(%ebp)  ; "Q}|u"
+0x0804867a <+26>:   movl   $0x67667360,-0x19(%ebp)  ; "`sfg"
+0x08048681 <+33>:   movl   $0x7b66737e,-0x15(%ebp)  ; "~sf{"
+0x08048688 <+40>:   movl   $0x33617c7d,-0x11(%ebp)  ; "}|a3"
+0x0804868f <+47>:   movb   $0x0,-0xd(%ebp)          ; null terminator
+
+; XOR decryption loop
+0x080486d5 <+117>:  xor    %edx,%eax                ; XOR with key
+0x080486d7 <+119>:  mov    %eax,%edx
+0x080486df <+127>:  mov    %dl,(%eax)               ; Store decrypted byte
+
+; String comparison
+0x080486f2 <+146>:  mov    $0x80489c3,%eax          ; "Congratulations!"
+0x08048700 <+160>:  repz cmpsb %es:(%edi),%ds:(%esi)
+0x08048711 <+177>:  test   %eax,%eax
+0x08048713 <+179>:  jne    0x8048723 <decrypt+195>
+0x0804871c <+188>:  call   0x80484e0 <system@plt>   ; Execute /bin/sh
+```
+
+**Critical observations:**
+* User input is subtracted from constant `0x1337d00d` (322424845)
+* Result determines which case in switch statement executes
+* Switch handles values 1-9 and 16-21, all others use `rand()`
+* Each case calls `decrypt()` with the difference as the key
+* Decrypt performs XOR operation on encrypted string
+* Correct decryption yields "Congratulations!" and spawns shell
+
+---
+
+## Decompiled C Code
+
+```c
+void decrypt(unsigned int key) {   
+    char encrypted[] = "Q}|u`sfg~sf{}|a3";
+    
+    for (int i = 0; i < strlen(encrypted); i++) {
+        encrypted[i] = encrypted[i] ^ key;
+    }
+    
+    if (strcmp(encrypted, "Congratulations!") == 0) {
+        system("/bin/sh");
+    } else {
+        puts("\nInvalid Password");
+    }
+}
+
+void test(unsigned int input, unsigned int constant) {
+    unsigned int difference = constant - input;
+    
+    switch (difference) {
+        case 1:
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+        case 7:
+        case 8:
+        case 9:
+        case 16:
+        case 17:
+        case 18:
+        case 19:
+        case 20:
+        case 21:
+            decrypt(difference);
+            return;
+        default:
+            decrypt(rand());
+            return;
+    }
+}
+
+int main() {
+    unsigned int user_input;
+    
+    srand(time(NULL));
+    
+    puts("***********************************");
+    puts("*\t\tlevel03\t\t**");
+    puts("***********************************");
+    printf("Password:");
+    
+    scanf("%d", &user_input);
+    test(user_input, 0x1337d00d);  // 322424845
+    
+    return 0;
+}
+```
+
+---
+
+## Vulnerability Analysis
+
+### XOR Cipher Mechanics
+
+**Encrypted string (hex):**
+```
+Q  }  |  u  `  s  f  g  ~  s  f  {  }  |  a  3
+51 7d 7c 75 60 73 66 67 7e 73 66 7b 7d 7c 61 33
+```
+
+**Target string:**
+```
+C  o  n  g  r  a  t  u  l  a  t  i  o  n  s  !
+43 6f 6e 67 72 61 74 75 6c 61 74 69 6f 6e 73 21
+```
+
+**XOR property:** `A ^ B = C` implies `A ^ C = B`
+
+**Calculate decryption key:**
+```
+encrypted[0] = 'Q' = 0x51
+target[0]    = 'C' = 0x43
+
+key = 0x51 ^ 0x43 = 0x12 = 18 (decimal)
+```
+
+**Verification with second character:**
+```
+encrypted[1] = '}' = 0x7d
+target[1]    = 'o' = 0x6f
+
+0x7d ^ 18 = 0x6f ✓ (correct)
+```
+
+---
+
+## Exploitation Strategy
+
+### Step 1: Determine Valid Key Range
+
+Switch statement accepts difference values:
+- 1-21
+
+Our required key is **18**, which falls in the valid range.
+
+### Step 2: Calculate Required Input
+
+```
+difference = constant - input
+18 = 322424845 - input
+input = 322424845 - 18
+input = 322424827
+```
+
+---
+
+## Exploitation
+
+```bash
+$ ./level03
+***********************************
+*		level03		**
+***********************************
+Password: 322424827
+Congratulations!
+$ whoami
+level04
+$ cat /home/users/level04/.pass
+kgv3tkEb9h2mLkRsPkXRfc2mHbjMxQzvb2FrgKkf
+```
+
+**Success:** Shell access with `level04` privileges and password extraction!
+
+---

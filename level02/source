@@ -5,26 +5,22 @@ int main(void)
     char user_password[112];
     int bytes_read;
     FILE *password_file;
-    
-    // Initialize all arrays to zero
+
     memset(username, 0, 100);
     memset(password_buffer, 0, 48);
     memset(user_password, 0, 112);
     
     password_file = NULL;
     bytes_read = 0;
-    
-    // Open password file
+
     password_file = fopen("/home/users/level03/.pass", "r");
     if (password_file == NULL) {
         fwrite("ERROR: failed to open password file\n", 1, 0x24, stderr);
         exit(1);
     }
-    
-    // Read password from file
+
     bytes_read = fread(password_buffer, 1, 0x29, password_file);
-    
-    // Remove newline from password
+
     size_t newline_pos = strcspn(password_buffer, "\n");
     password_buffer[newline_pos] = '\0';
     
@@ -36,19 +32,19 @@ int main(void)
     
     fclose(password_file);
     
-    // Display login prompt
+
     puts("===== [ Secure Access System v1.0 ] =====");
     puts("/***************************************\\");
     puts("| You must login to access this system. |");
     puts("\\**************************************/");
     
-    // Get username
+
     printf("--[ Username: ");
     fgets(username, 100, stdin);
     newline_pos = strcspn(username, "\n");
     username[newline_pos] = '\0';
     
-    // Get password
+
     printf("--[ Password: ");
     fgets(user_password, 100, stdin);
     newline_pos = strcspn(user_password, "\n");
@@ -56,15 +52,14 @@ int main(void)
     
     puts("*****************************************");
     
-    // Check password
+
     if (strncmp(password_buffer, user_password, 0x29) == 0) {
         printf("Greetings, %s!\n", username);
         system("/bin/sh");
         return 0;
     }
-    
-    // Login failed
-    printf(username);  // Potential format string vulnerability
+
+    printf(username);
     puts(" does not have access!");
     exit(1);
 }

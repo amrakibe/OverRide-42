@@ -3,28 +3,37 @@
 #include <string.h>
 #include <time.h>
 
-int get_unum()
+void clear_stdin(void)
+{
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) { }
+}
+
+unsigned int get_unum(void)
 {
     unsigned int input = 0;
-    fflush(stdout);
-    __isoc99_scanf("%u", &input);
+    if (scanf("%u", &input) != 1) {
+        clear_stdin();
+        return 0;
+    }
     clear_stdin();
-    return 0;
+    return input;
 }
 
 void decrypt(unsigned int key)
-{   
-    // unsigned char encrypted[] = {
-    //     0x51, 0x7d, 0x7c, 0x75, 0x60, 0x73, 0x66, 0x67,
-    //     0x7e, 0x73, 0x66, 0x7b, 0x7d, 0x7c, 0x61, 0x33, 0x00
-    // };
-
+{  
+    printf("Key: %u\n", key);
     char encrypted[] = "Q}|u`sfg~sf{}|a3";
+    size_t len = strlen(encrypted);
+
     
-    for (int i = 0; i < encrypted.length; i++) {
-        encrypted[i] = encrypted[i] ^ key;
+    unsigned char k = (unsigned char)key;
+
+    for (size_t i = 0; i < len; i++) {
+        encrypted[i] = encrypted[i] ^ k;
     }
-    if (strcmp((char*)encrypted, "Congratulations!") == 0) {
+
+    if (strcmp(encrypted, "Congratulations!") == 0) {
         system("/bin/sh");
     } else {
         puts("\nInvalid Password");
@@ -34,7 +43,7 @@ void decrypt(unsigned int key)
 void test(unsigned int input, unsigned int constant)
 {
     unsigned int difference = constant - input;
-    
+
     switch (difference)
     {
         case 1:
@@ -55,26 +64,28 @@ void test(unsigned int input, unsigned int constant)
             decrypt(difference);
             return;
         default:
-            decrypt(rand());
+            decrypt((unsigned int)(rand() & 0xFF));
             return;
     }
 }
 
-// Main function
-int main()
+/* Main function */
+int main(void)
 {
     unsigned int user_input;
-    
-    srand(time(NULL));
-    
+
+    srand((unsigned int)time(NULL));
+
     puts("***********************************");
     puts("*\t\tlevel03\t\t**");
     puts("***********************************");
-    printf("Password:");
-    
-    scanf("%d", &user_input);
 
-    test(user_input, 322424845); // 0x1337D00D
-    
+    printf("Password: ");
+    fflush(stdout);
+
+    user_input = get_unum();
+
+    test(user_input, 322424845);
+
     return 0;
 }
