@@ -55,7 +55,6 @@ Partial RELRO   No canary found   NX disabled   No PIE          No RPATH   No RU
 * **No stack canary** → Stack buffer overflow protection is disabled
 * **NX disabled** → Stack is executable (shellcode execution possible)
 * **No PIE** → Predictable memory addresses
-* **No ASLR** → Memory layout is consistent across runs
 
 ---
 
